@@ -3,6 +3,7 @@
 //
 
 #include "CornerDBMaker.h"
+#include "../Model/RubiksCubeBitboard.cpp"
 using namespace std;
 
 CornerDBMaker::CornerDBMaker(string _fileName) {

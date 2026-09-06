@@ -3,6 +3,7 @@
 //
 
 #include "RubiksCube.h"
+using namespace std;
 
 class RubiksCube1dArray : public RubiksCube {
 private:

@@ -3,6 +3,7 @@
 //
 
 #include "RubiksCube.h"
+using namespace std;
 
 class RubiksCubeBitboard : public RubiksCube {
 
@@ -13,7 +14,7 @@ private:
                      {7, 8, 3},
                      {6, 5, 4}};
 
-    uint64_t one_8 = (1 << 8) - 1, one_24 = (1 << 24) - 1;
+    uint64_t one_8 = (1ULL << 8) - 1, one_24 = (1ULL << 24) - 1;
 
     void rotateFace(int ind) {
         uint64_t side = bitboard[ind];

@@ -3,6 +3,7 @@
 //
 
 #include "RubiksCube.h"
+using namespace std;
 
 //
 //Given a color return it's first letter

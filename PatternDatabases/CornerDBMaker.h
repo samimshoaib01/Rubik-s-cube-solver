@@ -6,18 +6,15 @@
 #define CORNERDBMAKER_H
 
 #include "CornerPatternDatabase.h"
-#include "../Model/RubiksCubeBitboard.cpp"
-
-using namespace std;
 
 class CornerDBMaker {
 private:
-    string fileName;
+    std::string fileName;
     CornerPatternDatabase cornerDB;
 
 public:
-    CornerDBMaker(string _fileName);
-    CornerDBMaker(string _fileName, uint8_t init_val);
+    CornerDBMaker(std::string _fileName);
+    CornerDBMaker(std::string _fileName, uint8_t init_val);
 
     bool bfsAndStore();
 };

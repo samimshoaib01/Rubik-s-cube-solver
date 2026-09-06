@@ -7,19 +7,17 @@
 
 #include "bits/stdc++.h"
 #include "math.h"
-using namespace std;
-
 template <size_t N, size_t K = N>
 class PermutationIndexer
 {
     // Precomputed table containing the number of ones in the binary
     // representation of each number.  The largest N-bit number is
     // 2^N-1 = (1 << N) - 1.
-    array<uint32_t, (1 << N) - 1> onesCountLookup;
+    std::array<uint32_t, (1 << N) - 1> onesCountLookup;
 
     // Precomputed table of factorials (or "picks" if N != K).  They're in
     // reverse order.
-    array<uint32_t, K> factorials;
+    std::array<uint32_t, K> factorials;
 
 public:
     /**
@@ -29,7 +27,7 @@ public:
     {
         for (uint32_t i = 0; i < (1 << N) - 1; ++i)
         {
-            bitset<N> bits(i);
+            std::bitset<N> bits(i);
             this->onesCountLookup[i] = bits.count();
         }
 
@@ -41,13 +39,13 @@ public:
      * Calculate the lexicographic rank (the index) of a permutation in O(n)
      * complexity.
      */
-    uint32_t rank(const array<uint8_t, K>& perm) const
+    uint32_t rank(const std::array<uint8_t, K>& perm) const
     {
         // This will hold the Lehmer code (in a factorial number system).
-        array<uint32_t, K> lehmer;
+        std::array<uint32_t, K> lehmer;
 
         // Set of "seen" digits in the permutation.
-        bitset<N> seen;
+        std::bitset<N> seen;
 
         // The first digit of the Lehmer code is always the first digit of
         // the permutation.

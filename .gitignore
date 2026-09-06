@@ -1,0 +1,9 @@
+# Build directories
+build/
+cmake-build-debug/
+
+# CLion
+.idea/
+
+# macOS
+.DS_Store

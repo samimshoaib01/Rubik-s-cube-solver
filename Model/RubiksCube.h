@@ -7,8 +7,6 @@
 
 #include "bits/stdc++.h"
 
-using namespace std;
-
 
 /**
  * A base class for all Rubik's Cube Model. There are various representation for Rubik's Cube.
@@ -69,7 +67,7 @@ public:
     /*
      * Returns the move in the string format.
      */
-    static string getMove(MOVE ind);
+    static std::string getMove(MOVE ind);
 
     /*
      * Print the Rubik Cube in Planar format.
@@ -118,7 +116,7 @@ public:
     /*
      * Randomly shuffle the cube with 'times' moves and returns the moves performed.
      */
-    vector<MOVE> randomShuffleCube(unsigned int times);
+    std::vector<MOVE> randomShuffleCube(unsigned int times);
 
     /*
      * Perform moves on the Rubik Cube
@@ -177,7 +175,7 @@ public:
 
     virtual RubiksCube &b2() = 0;
 
-    string getCornerColorString(uint8_t ind) const;
+    std::string getCornerColorString(uint8_t ind) const;
 
     uint8_t getCornerIndex(uint8_t ind) const;
 
