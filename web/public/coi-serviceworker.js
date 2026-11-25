@@ -35,6 +35,9 @@ if (typeof self !== 'undefined' && self.document === undefined) {
           const headers = new Headers(response.headers);
           headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
           headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+          // Same-origin subresources must opt in explicitly once the page is
+          // isolated, including the worker scripts the pthread pool loads.
+          headers.set('Cross-Origin-Resource-Policy', 'same-origin');
 
           return new Response(response.body, {
             status: response.status,

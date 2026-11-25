@@ -39,6 +39,19 @@ const FACE_SPEC = {
 // DOM
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Threads are opt-in. The single-threaded build works in every browser with
+// no service worker, no cross-origin isolation and no reload, so that is what
+// a first-time visitor gets. Turning threads on needs COOP/COEP, which only
+// take effect on a fresh document load, hence the stored preference + reload.
+const THREAD_PREF_KEY = 'rubiks:threads';
+
+function wantsThreads() {
+  try { return localStorage.getItem(THREAD_PREF_KEY) === '1'; } catch { return false; }
+}
+function setWantsThreads(on) {
+  try { on ? localStorage.setItem(THREAD_PREF_KEY, '1') : localStorage.removeItem(THREAD_PREF_KEY); } catch { /* ignore */ }
+}
+
 const $ = (id) => document.getElementById(id);
 const stage     = $('stage');
 const loader    = $('loader');
@@ -204,11 +217,13 @@ function failAllPending(err) {
   waiting.forEach(({ reject }) => reject(err));
 }
 
-function spawnWorker({ forceSingleThread = false } = {}) {
+function spawnWorker({ threaded = false } = {}) {
   if (worker) worker.terminate();
   failAllPending(new Error('cancelled'));
 
-  worker = new Worker('./solver.worker.js' + (forceSingleThread ? '?st=1' : ''));
+  // Single-threaded unless explicitly asked for, so a browser that cannot
+  // start a pthread pool never sees the build that would break it.
+  worker = new Worker('./solver.worker.js' + (threaded ? '?mt=1' : ''));
 
   worker.onmessage = (e) => {
     const { id, ok, error, fatal, progress, ...rest } = e.data;
@@ -358,7 +373,7 @@ async function loadDatabase() {
   }
 
   loadTitle.textContent = 'Starting solver…';
-  caps = await initWithFallback(raw);
+  caps = await initWithFallback(raw, bootThreaded);
   loadBar.style.width = '100%';
   return caps;
 }
@@ -377,25 +392,36 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
-async function initWithFallback(raw) {
-  // The buffer is transferred on the first attempt, so keep a copy for a retry.
-  const backup = raw.slice();
+let threadFailure = null;
+
+async function initWithFallback(raw, triedThreaded) {
+  // Only pay for the backup copy when there is a retry that could need it.
+  const backup = triedThreaded ? raw.slice() : null;
 
   try {
-    return await withTimeout(call('init', raw, [raw.buffer]), 90000, 'Threaded startup');
+    return await withTimeout(call('init', raw, [raw.buffer]), 90000,
+                             triedThreaded ? 'Threaded startup' : 'Startup');
   } catch (err) {
-    console.warn('[solver] threaded start failed, falling back:', err.message);
-    loadTitle.textContent = 'Retrying single-threaded…';
-    loadDetail.textContent = 'Multiple cores unavailable; starting the portable build.';
+    if (!triedThreaded) throw err;
 
-    spawnWorker({ forceSingleThread: true });
+    // Threads were requested but could not start — Chrome, for instance,
+    // throws an opaque Event out of the pthread pool. Forget the preference
+    // so the next load does not repeat it, and carry on single-threaded.
+    console.warn('[solver] threaded start failed, falling back:', err.message);
+    threadFailure = err.message;
+    setWantsThreads(false);
+
+    loadTitle.textContent = 'Retrying single-threaded…';
+    loadDetail.textContent = 'Could not start the thread pool; using the portable build.';
+
+    spawnWorker({ threaded: false });
     return withTimeout(call('init', backup, [backup.buffer]), 90000, 'Startup');
   }
 }
 
 // Rebuilds the worker from scratch and reloads the database from cache.
 async function restartWorker() {
-  spawnWorker({ forceSingleThread: !caps.threaded });
+  spawnWorker({ threaded: caps.threaded });
   const gz = await idbGet(IDB_KEY);
   if (!gz) { // cache miss — fall back to the full path
     caps = await loadDatabase();
@@ -406,18 +432,30 @@ async function restartWorker() {
 }
 
 function describeThreads() {
-  if (!caps.threaded) {
-    useMT.checked = false;
-    useMT.disabled = true;
-    mtWrap.classList.add('off');
-    mtLabel.textContent = 'Multiple cores unavailable in this browser';
-    mtWrap.title = 'Needs SharedArrayBuffer, which requires a cross-origin-isolated page.';
-    return;
-  }
   useMT.disabled = false;
   mtWrap.classList.remove('off');
-  mtLabel.textContent = `Use all ${caps.threads} CPU cores`;
+  useMT.checked = caps.threaded;
+
+  if (caps.threaded) {
+    mtLabel.textContent = `Using all ${caps.threads} CPU cores`;
+    mtWrap.title = '';
+  } else if (threadFailure) {
+    mtLabel.textContent = 'Multi-core unavailable in this browser';
+    mtWrap.title = threadFailure;
+    useMT.disabled = true;
+    mtWrap.classList.add('off');
+  } else {
+    mtLabel.textContent = 'Use all CPU cores (reloads once)';
+    mtWrap.title = 'WebAssembly threads need cross-origin isolation, which only applies on a fresh page load.';
+  }
 }
+
+useMT.addEventListener('change', () => {
+  setWantsThreads(useMT.checked);
+  // Isolation headers are applied by a service worker at document load, so the
+  // switch can only take effect on the next one.
+  location.reload();
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UI
@@ -575,7 +613,21 @@ btnReset.addEventListener('click', async () => {
 
 buildCube();
 resize();
-spawnWorker();
+
+// Decide the mode before anything starts. Cross-origin isolation is only
+// requested when the visitor has opted in, so the default path stays plain:
+// no service worker, no extra reload, no COEP restrictions on the page.
+const bootThreaded = wantsThreads() && self.crossOriginIsolated === true;
+
+if (wantsThreads() && !self.crossOriginIsolated) {
+  // Opted in but not yet isolated — install the shim, which reloads once and
+  // brings the page back cross-origin isolated.
+  const tag = document.createElement('script');
+  tag.src = './coi-serviceworker.js';
+  document.head.appendChild(tag);
+}
+
+spawnWorker({ threaded: bootThreaded });
 
 (function animate() {
   requestAnimationFrame(animate);

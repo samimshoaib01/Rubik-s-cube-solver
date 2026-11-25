@@ -11,10 +11,10 @@
 // the single-threaded build instead so the demo still works.
 //
 
-// ?st=1 forces the single-threaded build. The page uses it to retry after a
-// failed threaded start, so a broken MT path degrades instead of dead-ending.
-const FORCE_ST = /[?&]st=1/.test(self.location.search);
-const MT = !FORCE_ST
+// Single-threaded by default. The page asks for the threaded build with ?mt=1
+// only when the visitor opted in and the document is genuinely isolated, so a
+// browser that cannot start a pthread pool never loads the build that breaks.
+const MT = /[?&]mt=1/.test(self.location.search)
   && typeof crossOriginIsolated !== 'undefined'
   && crossOriginIsolated;
 

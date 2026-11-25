@@ -115,7 +115,6 @@
 </style>
 </head>
 <body>
-<script src="./coi-serviceworker.js"></script>
 
 <header>
   <h1>Rubik's Cube Solver</h1>
@@ -154,7 +153,7 @@
       <button class="primary" id="btn-solve" style="width:100%" disabled>Find optimal solution</button>
       <button id="btn-cancel" style="width:100%; margin-top:8px; display:none">Cancel search</button>
       <label class="check" id="mt-wrap">
-        <input type="checkbox" id="use-mt" checked disabled>
+        <input type="checkbox" id="use-mt" disabled>
         <span id="mt-label">Use all CPU cores</span>
       </label>
     </div>
@@ -187,11 +186,12 @@
         <b>provably optimal</b>.
       </p>
       <p class="note" style="margin-top:10px">
-        The search is also parallelised: the 18 root moves are dealt out across
-        your CPU cores, each running an independent depth-first search, and the
-        first to find a solution stops the rest. Every solution in a given
-        iteration has the same length, so racing them away doesn't cost
-        optimality.
+        The search parallelises too: the 18 root moves are dealt out across your
+        CPU cores, each running an independent depth-first search, and the first
+        to find a solution stops the rest. Every solution in a given iteration
+        has the same length, so racing them doesn't cost optimality. That build
+        needs WebAssembly threads, which need a cross-origin-isolated page, so
+        it is opt-in above and not every browser will start it.
       </p>
     </div>
   </aside>
