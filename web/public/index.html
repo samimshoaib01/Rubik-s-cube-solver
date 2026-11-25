@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rubik's Cube Solver</title>
+<meta name="description" content="An optimal Rubik's Cube solver — Korf's IDA* over a 100-million-state corner pattern database, written in C++ and compiled to WebAssembly.">
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --border: #272e38;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #4f9eff;
+    --accent-dim: #1f6feb;
+    --good: #3fb950;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 18px 24px; border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  header .spacer { flex: 1; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  header a:hover { text-decoration: underline; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #stage { flex: 1; position: relative; min-width: 0; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+
+  aside {
+    width: 330px; flex-shrink: 0; border-left: 1px solid var(--border);
+    background: var(--panel); padding: 20px; overflow-y: auto;
+  }
+  .group { margin-bottom: 24px; }
+  .group h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 0 0 10px; font-weight: 600;
+  }
+
+  button {
+    font: inherit; font-size: 14px; color: var(--text);
+    background: #21262d; border: 1px solid var(--border); border-radius: 6px;
+    padding: 9px 14px; cursor: pointer; transition: background .12s, border-color .12s;
+  }
+  button:hover:not(:disabled) { background: #2d333b; border-color: #3d444d; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent-dim); border-color: var(--accent-dim); font-weight: 500; }
+  button.primary:hover:not(:disabled) { background: #2b7de9; }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; }
+
+  label.slider { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  label.slider b { color: var(--text); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+
+  #moves {
+    font-family: var(--mono); font-size: 13px; line-height: 1.9;
+    background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px; min-height: 64px; word-spacing: 4px;
+  }
+  #moves .done { color: var(--muted); }
+  #moves .now { color: var(--bg); background: var(--accent); border-radius: 3px; padding: 1px 4px; }
+  #moves .empty { color: var(--muted); font-family: inherit; font-style: italic; }
+
+  dl.stats { margin: 0; font-size: 13px; }
+  dl.stats div { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #1d232b; }
+  dl.stats div:last-child { border-bottom: 0; }
+  dl.stats dt { color: var(--muted); }
+  dl.stats dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  dl.stats dd.ok { color: var(--good); }
+
+  /* Loading overlay */
+  #loader {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: var(--bg); z-index: 10; padding: 24px; text-align: center;
+  }
+  #loader.hidden { display: none; }
+  #loader p { margin: 0; color: var(--muted); font-size: 14px; max-width: 420px; }
+  #loader .big { color: var(--text); font-size: 15px; }
+  .bar { width: min(380px, 80vw); height: 5px; background: #21262d; border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+
+  .note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .note code { font-family: var(--mono); color: #c9d1d9; background: #0d1117;
+               padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); }
+
+  @media (max-width: 820px) {
+    main { flex-direction: column; }
+    #stage { height: 48vh; flex: none; }
+    aside { width: 100%; border-left: 0; border-top: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Rubik's Cube Solver</h1>
+  <span class="sub">Korf's IDA* &middot; C++ &rarr; WebAssembly</span>
+  <span class="spacer"></span>
+  <a href="https://github.com/samimshoaib01/Rubik-s-cube-solver" target="_blank" rel="noopener">View source on GitHub &rarr;</a>
+</header>
+
+<main>
+  <div id="stage">
+    <div id="loader">
+      <p class="big" id="load-title">Loading solver&hellip;</p>
+      <div class="bar"><i id="load-bar"></i></div>
+      <p id="load-detail">Fetching the 48&nbsp;MB corner pattern database (19.5&nbsp;MB compressed). This is cached after the first visit.</p>
+    </div>
+  </div>
+
+  <aside>
+    <div class="group">
+      <h2>Scramble</h2>
+      <label class="slider" for="depth">Random moves: <b id="depth-val">8</b></label>
+      <input type="range" id="depth" min="1" max="12" value="8">
+      <div class="row">
+        <button id="btn-scramble" disabled>Scramble</button>
+        <button id="btn-reset" disabled>Reset</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h2>Solve</h2>
+      <button class="primary" id="btn-solve" style="width:100%" disabled>Find optimal solution</button>
+    </div>
+
+    <div class="group">
+      <h2>Solution</h2>
+      <div id="moves"><span class="empty">Scramble the cube to begin.</span></div>
+    </div>
+
+    <div class="group">
+      <h2>Stats</h2>
+      <dl class="stats">
+        <div><dt>Search time</dt><dd id="st-time">&mdash;</dd></div>
+        <div><dt>Solution length</dt><dd id="st-len">&mdash;</dd></div>
+        <div><dt>Heuristic lower bound</dt><dd id="st-lb">&mdash;</dd></div>
+        <div><dt>State</dt><dd id="st-state">solved</dd></div>
+      </dl>
+    </div>
+
+    <div class="group">
+      <h2>How it works</h2>
+      <p class="note">
+        The cube is stored as a <b>bitboard</b> &mdash; one 64-bit word per face,
+        eight bits per sticker &mdash; so a turn is a handful of shifts and masks.
+        <b>IDA*</b> searches it depth-first, guided by a pattern database holding the
+        exact distance-to-solved for all <code>100,179,840</code> corner
+        configurations, packed at 4 bits each via Lehmer-code ranking.
+        Because that heuristic never overestimates, the first solution found is
+        <b>provably optimal</b>.
+      </p>
+      <p class="note" style="margin-top:10px">
+        The desktop build fans the search across every CPU core for an 8&ndash;10&times;
+        speedup; this page runs single-threaded, since shared-memory threads need
+        response headers GitHub Pages can't set.
+      </p>
+    </div>
+  </aside>
+</main>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

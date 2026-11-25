@@ -1,0 +1,62 @@
+# Builds the WebAssembly demo and publishes it to GitHub Pages.
+#
+# Emscripten is installed here rather than locally, so the only thing needed to
+# ship a change is a push to master.
+
+name: Deploy demo
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'web/**'
+      - 'Model/**'
+      - 'PatternDatabases/**'
+      - 'Databases/**'
+      - 'compat/**'
+      - '.github/workflows/deploy-demo.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: emsdk-cache
+
+      - name: Build WebAssembly bundle
+        run: ./web/build.sh
+
+      # enablement turns Pages on for the repo automatically, so there is no
+      # manual switch to flip in Settings before the first deploy.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
