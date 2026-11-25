@@ -52,6 +52,38 @@ function labDist(a, b) {
   return Math.sqrt(dL * dL + da * da + db * db);
 }
 
+// OpenCV's scaling: H in 0..179, S and V in 0..255, so the thresholds below are
+// the ones from Scanner/CubeScanner.cpp verbatim.
+function rgbToHsv(r, g, b) {
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+
+  let h = 0;
+  if (d) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+  }
+  h = Math.round(h * 30);            // 60 degrees -> OpenCV's half-degree scale
+  if (h < 0) h += 180;
+
+  return [h, max ? Math.round((d / max) * 255) : 0, max];
+}
+
+// classifyByHue from the desktop scanner. Used only for the live preview, so
+// the grid can show what it is reading before anything is captured — the final
+// answer still comes from the Lab calibration, which needs all six centres and
+// so cannot run until the scan is complete.
+function classifyByHue(rgb) {
+  const [H, S, V] = rgbToHsv(rgb[0], rgb[1], rgb[2]);
+  if (V > 180 && S < 100) return 'W';
+  if (S < 60) return 'W';
+  if (H < 8 || H > 170) return 'R';
+  if (H < 16) return 'O';
+  if (H < 42) return 'Y';
+  if (H < 90) return 'G';
+  return 'B';
+}
+
 // ── Sampling ─────────────────────────────────────────────────────────────────
 
 // Averages a patch at the centre of each of the 9 cells, which rejects the
@@ -122,6 +154,10 @@ export function openScanner() {
     let step = 0;
     let stream = null;
     let labels = null;
+    let preview = null;      // live sampling timer
+    let mirrored = false;    // display only — never affects what is sampled
+    let devices = [];
+    let deviceId = null;
 
     const root = document.createElement('div');
     root.className = 'scan-overlay';
@@ -129,14 +165,18 @@ export function openScanner() {
       <div class="scan-panel">
         <div class="scan-head">
           <strong id="scan-title">Scan your cube</strong>
+          <select id="scan-cam" class="scan-sel" hidden></select>
+          <button class="scan-ghost" id="scan-mirror" title="Flip the preview horizontally">Mirror</button>
           <button class="scan-x" id="scan-close" title="Close">&times;</button>
         </div>
         <div class="scan-body">
-          <div class="scan-view">
+          <div class="scan-view" id="scan-view">
             <video id="scan-video" playsinline muted></video>
             <div class="scan-grid" id="scan-grid"></div>
+            <div class="scan-badge" id="scan-badge" hidden></div>
           </div>
           <div class="scan-side">
+            <div class="scan-target" id="scan-target"></div>
             <p class="scan-hint" id="scan-hint"></p>
             <div class="scan-progress" id="scan-progress"></div>
             <div id="scan-review" class="scan-review" hidden></div>
@@ -144,6 +184,7 @@ export function openScanner() {
           </div>
         </div>
         <div class="scan-foot">
+          <span class="scan-tip" id="scan-tip">Fill the square with one face</span>
           <button id="scan-back">Back</button>
           <button class="primary" id="scan-action">Capture face</button>
         </div>
@@ -160,8 +201,22 @@ export function openScanner() {
     const errorBox = $('scan-error');
     const actionBtn = $('scan-action');
     const backBtn = $('scan-back');
+    const view = $('scan-view');
+    const target = $('scan-target');
+    const badge = $('scan-badge');
+    const camSel = $('scan-cam');
+    const mirrorBtn = $('scan-mirror');
+    const tip = $('scan-tip');
 
-    for (let i = 0; i < 9; i++) grid.appendChild(document.createElement('i'));
+    // Nine cells, each holding a dot that shows what that sticker is reading.
+    const cells = [];
+    for (let i = 0; i < 9; i++) {
+      const cell = document.createElement('i');
+      const dot = document.createElement('u');
+      cell.appendChild(dot);
+      grid.appendChild(cell);
+      cells.push(dot);
+    }
 
     function showError(msg) {
       errorBox.hidden = !msg;
@@ -172,18 +227,61 @@ export function openScanner() {
 
     function finish(value) {
       document.removeEventListener('keydown', onKey);
+      stopPreview();
       if (stream) stream.getTracks().forEach((t) => t.stop());
       root.remove();
       resolve(value);
     }
     document.addEventListener('keydown', onKey);
 
+    // Each captured face shows as a 3x3 thumbnail of what was read, so the
+    // scan's progress is visible rather than just counted.
     function renderProgress() {
       progress.innerHTML = FACES.map((f, i) => {
-        const state = captured[f.id] ? 'done' : i === step ? 'now' : '';
-        return `<span class="${state}" style="--c:${SWATCH[f.letter]}">${f.id}</span>`;
+        const done = captured[f.id];
+        const state = done ? 'done' : i === step ? 'now' : '';
+        const mini = done
+          ? `<div class="scan-chipgrid">${done
+              .map((rgb) => `<b style="background:${SWATCH[classifyByHue(rgb)]}"></b>`)
+              .join('')}</div>`
+          : `<div class="scan-chipgrid empty" style="--c:${SWATCH[f.letter]}"></div>`;
+        return `<span class="${state}" title="${f.name}">${mini}<em>${f.id}</em></span>`;
       }).join('');
     }
+
+    // Samples continuously so the grid shows what each cell is reading before
+    // anything is committed. Without it the first feedback you get is after all
+    // six faces are in, which is far too late to fix a lighting problem.
+    function startPreview() {
+      stopPreview();
+      preview = setInterval(() => {
+        if (labels || video.readyState < 2) return;
+        let rgbs;
+        try { rgbs = sampleFace(video); } catch { return; }
+
+        rgbs.forEach((rgb, rawIdx) => {
+          const row = Math.floor(rawIdx / 3), col = rawIdx % 3;
+          // The overlay is flipped when the view is, so each dot stays on top
+          // of the sticker it actually sampled.
+          const shown = row * 3 + (mirrored ? 2 - col : col);
+          const dot = cells[shown];
+          dot.style.background = SWATCH[classifyByHue(rgb)];
+          dot.style.opacity = '1';
+        });
+      }, 120);
+    }
+
+    function stopPreview() {
+      if (preview) clearInterval(preview);
+      preview = null;
+    }
+
+    function applyMirror() {
+      video.style.transform = mirrored ? 'scaleX(-1)' : '';
+      mirrorBtn.classList.toggle('on', mirrored);
+    }
+
+    mirrorBtn.addEventListener('click', () => { mirrored = !mirrored; applyMirror(); });
 
     function renderStep() {
       showError('');
@@ -191,18 +289,34 @@ export function openScanner() {
       grid.hidden = false;
       const face = FACES[step];
       title.textContent = `Scan your cube — face ${step + 1} of 6`;
-      hint.innerHTML = `Show the <b style="color:${SWATCH[face.letter]}">${face.name}</b> face.<br>${face.hint}`;
-      actionBtn.textContent = captured[face.id] ? 'Recapture face' : 'Capture face';
+      target.innerHTML =
+        `<span class="dot" style="background:${SWATCH[face.letter]}"></span>` +
+        `<span><b>${face.name}</b> centre<br><small>${face.id} face</small></span>`;
+      hint.textContent = face.hint;
+      actionBtn.textContent = captured[face.id] ? 'Recapture' : 'Capture face';
       backBtn.disabled = step === 0;
+      tip.textContent = 'Dots show what each sticker is reading right now';
+      badge.hidden = true;
       renderProgress();
+      startPreview();
+    }
+
+    // Brief confirmation so a capture does not feel like nothing happened.
+    function flashCaptured(name) {
+      badge.textContent = `${name} captured`;
+      badge.hidden = false;
+      setTimeout(() => { badge.hidden = true; }, 900);
     }
 
     // Final pass: show what was read and let a misread sticker be corrected by
     // clicking it. Lighting fools any classifier eventually, and retaking the
     // whole scan over one sticker would be miserable.
     function renderReview(labelled) {
+      stopPreview();
       labels = labelled;
       grid.hidden = true;
+      badge.hidden = true;
+      tip.textContent = 'Centres are fixed — they define the colour calibration';
       review.hidden = false;
       title.textContent = 'Check the colours';
       hint.textContent = 'Click any sticker that was read wrong to cycle its colour.';
@@ -239,6 +353,7 @@ export function openScanner() {
       }
       try {
         captured[FACES[step].id] = sampleFace(video);
+        flashCaptured(FACES[step].name);
       } catch (err) {
         showError(err.message);
         return;
@@ -252,19 +367,59 @@ export function openScanner() {
     });
 
     backBtn.addEventListener('click', () => {
-      if (labels) { labels = null; renderStep(); return; }
+      if (labels) { labels = null; startPreview(); renderStep(); return; }
       if (step > 0) { step--; renderStep(); }
     });
 
     $('scan-close').addEventListener('click', () => finish(null));
 
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false })
-      .then((s) => {
-        stream = s;
-        video.srcObject = s;
-        return video.play();
-      })
+    async function listCameras() {
+      try {
+        const all = await navigator.mediaDevices.enumerateDevices();
+        devices = all.filter((d) => d.kind === 'videoinput');
+        if (devices.length < 2) return;
+
+        camSel.hidden = false;
+        camSel.innerHTML = devices
+          .map((d, i) => `<option value="${d.deviceId}">${d.label || 'Camera ' + (i + 1)}</option>`)
+          .join('');
+        if (deviceId) camSel.value = deviceId;
+        camSel.onchange = () => start(camSel.value);
+      } catch { /* labels need permission; not worth failing over */ }
+    }
+
+    async function start(wantedId) {
+      stopPreview();
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+
+      const constraints = wantedId
+        ? { video: { deviceId: { exact: wantedId } }, audio: false }
+        : { video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false };
+
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      await video.play();
+
+      const track = stream.getVideoTracks()[0];
+      deviceId = track.getSettings().deviceId || wantedId || null;
+
+      // A front-facing camera is mirrored by default, because an unmirrored
+      // selfie view makes aligning the cube feel backwards. A rear camera is
+      // left alone. Either way this only changes the display.
+      if (wantedId === undefined) {
+        mirrored = (track.getSettings().facingMode || 'user') === 'user';
+        applyMirror();
+      }
+
+      // Match the container to the frame so the guide square on screen covers
+      // exactly the region being sampled.
+      const w = video.videoWidth, h = video.videoHeight;
+      if (w && h) view.style.aspectRatio = `${w} / ${h}`;
+
+      await listCameras();
+    }
+
+    start()
       .then(renderStep)
       .catch((err) => {
         grid.hidden = true;
