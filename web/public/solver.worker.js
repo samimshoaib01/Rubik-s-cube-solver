@@ -125,6 +125,11 @@ self.onmessage = async (e) => {
         reply({ facelets: mod.getFacelets() });
         break;
 
+      case 'setFacelets':
+        // Empty string means accepted; anything else is why it was not.
+        reply({ error: mod.setFacelets(payload) });
+        break;
+
       default:
         throw new Error('Unknown command: ' + type);
     }

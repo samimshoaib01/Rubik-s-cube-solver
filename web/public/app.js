@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { openScanner } from './scanner.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config
@@ -65,6 +66,7 @@ const btnReset    = $('btn-reset');
 const depthInput  = $('depth');
 const depthVal    = $('depth-val');
 const btnCancel   = $('btn-cancel');
+const btnScan     = $('btn-scan');
 const useMT       = $('use-mt');
 const mtWrap      = $('mt-wrap');
 const mtLabel     = $('mt-label');
@@ -112,7 +114,11 @@ addEventListener('resize', resize);
 const cubies = [];
 
 function buildCube() {
-  for (const c of cubies) scene.remove(c);
+  for (const c of cubies) {
+    scene.remove(c);
+    c.geometry.dispose();
+    c.material.forEach((m) => m.dispose());
+  }
   cubies.length = 0;
 
   // Rounded-ish cubie: a slightly inset box reads better than a hard cube.
@@ -468,6 +474,43 @@ useMT.addEventListener('change', () => {
   location.reload();
 });
 
+// A scanned cube has no move history to replay, so the 3D view is painted
+// directly from the 54 stickers instead. Face order U L F R B D, row-major,
+// matching getFacelets().
+const LETTER_COLOR = {
+  W: 0xf0f0f0, G: 0x19a74a, R: 0xd93025, B: 0x2176d9, O: 0xe8761a, Y: 0xf2d12e,
+};
+
+// (face, row, col) -> which cubie, and which of its six materials to paint.
+// Material order on a BoxGeometry is +X, -X, +Y, -Y, +Z, -Z.
+const FACE_GEOMETRY = {
+  U: { mat: 2, pos: (r, c) => [c - 1, 1, r - 1] },
+  D: { mat: 3, pos: (r, c) => [c - 1, -1, 1 - r] },
+  F: { mat: 4, pos: (r, c) => [c - 1, 1 - r, 1] },
+  B: { mat: 5, pos: (r, c) => [1 - c, 1 - r, -1] },
+  L: { mat: 1, pos: (r, c) => [-1, 1 - r, c - 1] },
+  R: { mat: 0, pos: (r, c) => [1, 1 - r, 1 - c] },
+};
+
+function paintFromFacelets(facelets) {
+  buildCube(); // back to a known grid position before addressing cubies
+
+  const byPos = new Map();
+  for (const c of cubies) byPos.set(`${c.position.x},${c.position.y},${c.position.z}`, c);
+
+  const order = ['U', 'L', 'F', 'R', 'B', 'D'];
+  order.forEach((face, fi) => {
+    const { mat, pos } = FACE_GEOMETRY[face];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        const letter = facelets[fi * 9 + r * 3 + c];
+        const cubie = byPos.get(pos(r, c).join(','));
+        if (cubie) cubie.material[mat].color.setHex(LETTER_COLOR[letter] ?? 0x12151a);
+      }
+    }
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // UI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -479,6 +522,7 @@ function setBusy(state) {
   btnScramble.disabled = state;
   btnSolve.disabled = state;
   btnReset.disabled = state;
+  btnScan.disabled = state;
 }
 
 function setStat(id, text, ok) {
@@ -581,6 +625,34 @@ btnSolve.addEventListener('click', async () => {
       setStat('st-state', 'error');
       console.error(err);
     }
+  }
+  setBusy(false);
+});
+
+btnScan.addEventListener('click', async () => {
+  const facelets = await openScanner();
+  if (!facelets) return; // cancelled
+
+  setBusy(true);
+  try {
+    const { error } = await call('setFacelets', facelets);
+    if (error) {
+      // The C++ side validates colour counts, centres and letters, and says
+      // exactly what was wrong — surface that rather than a generic failure.
+      movesBox.innerHTML = `<span class="empty">Scan rejected: ${error}</span>`;
+      setStat('st-state', 'invalid scan');
+    } else {
+      paintFromFacelets(facelets);
+      movesBox.innerHTML = '<span class="empty">Cube scanned — ready to solve.</span>';
+      setStat('st-time', '—');
+      setStat('st-len', '—');
+      setStat('st-lb', '—');
+      setStat('st-threads', '—');
+      setStat('st-state', 'scanned');
+    }
+  } catch (err) {
+    movesBox.innerHTML = `<span class="empty">Scan failed: ${err.message}</span>`;
+    setStat('st-state', 'error');
   }
   setBusy(false);
 });
