@@ -142,6 +142,84 @@ std::string getFacelets() {
     return s;
 }
 
+// ── Loading a scanned cube ───────────────────────────────────────────────────
+//
+// Takes the same 54 colour letters getFacelets() produces: faces in the order
+// U L F R B D, each read row-major. Mirrors buildCubeFromScan in main.cpp,
+// which does this for the OpenCV scanner on the desktop side.
+//
+// Returns an empty string on success, or a human-readable reason it was
+// rejected. A scan with a misread sticker is the normal case, not an
+// exceptional one, so the caller gets told what was wrong rather than throwing.
+
+static bool colorFromLetter(char c, RubiksCube::COLOR &out) {
+    switch (c) {
+        case 'W': out = RubiksCube::COLOR::WHITE;  return true;
+        case 'G': out = RubiksCube::COLOR::GREEN;  return true;
+        case 'R': out = RubiksCube::COLOR::RED;    return true;
+        case 'B': out = RubiksCube::COLOR::BLUE;   return true;
+        case 'O': out = RubiksCube::COLOR::ORANGE; return true;
+        case 'Y': out = RubiksCube::COLOR::YELLOW; return true;
+        default:  return false;
+    }
+}
+
+std::string setFacelets(const std::string &facelets) {
+    if (facelets.size() != 54)
+        return "Expected 54 stickers, got " + std::to_string(facelets.size());
+
+    RubiksCube::COLOR parsed[54];
+    int count[6] = {0, 0, 0, 0, 0, 0};
+
+    for (int i = 0; i < 54; i++) {
+        if (!colorFromLetter(facelets[i], parsed[i]))
+            return std::string("Unknown colour '") + facelets[i] + "' at sticker " + std::to_string(i);
+        count[(int) parsed[i]]++;
+    }
+
+    for (int c = 0; c < 6; c++) {
+        if (count[c] != 9) {
+            static const char *names[6] = {"white", "green", "red", "blue", "orange", "yellow"};
+            return std::string("Found ") + std::to_string(count[c]) + " " + names[c] +
+                   " stickers, expected 9";
+        }
+    }
+
+    // Centres are fixed by the cube's construction and define each face, so a
+    // scan whose centres disagree with the model has been read in the wrong
+    // orientation. Checking here gives a clearer error than an unsolvable cube.
+    static const char expectedCentres[6] = {'W', 'G', 'R', 'B', 'O', 'Y'};
+    for (int f = 0; f < 6; f++) {
+        if (facelets[f * 9 + 4] != expectedCentres[f]) {
+            static const char *faceNames[6] = {"U", "L", "F", "R", "B", "D"};
+            return std::string("Face ") + faceNames[f] + " has a " + facelets[f * 9 + 4] +
+                   " centre, expected " + expectedCentres[f] + " — faces scanned out of order?";
+        }
+    }
+
+    // Same layout as buildCubeFromScan: eight bits per position, position 8 is
+    // the centre and stays implicit.
+    static const int posMap[3][3] = {{0, 1, 2}, {7, 8, 3}, {6, 5, 4}};
+
+    RubiksCubeBitboard cube;
+    for (int f = 0; f < 6; f++) cube.bitboard[f] = 0;
+
+    for (int face = 0; face < 6; face++) {
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < 3; col++) {
+                int pos = posMap[row][col];
+                if (pos == 8) continue;   // centre is implicit
+
+                uint64_t colorBit = (uint64_t) (1 << (int) parsed[face * 9 + row * 3 + col]);
+                cube.bitboard[face] |= (colorBit << (8 * pos));
+            }
+        }
+    }
+
+    g_cube = cube;
+    return "";
+}
+
 bool isSolved() { return g_cube.isSolved(); }
 
 // The pattern database's distance-to-solved for the current state. Because the
@@ -259,19 +337,36 @@ void atomicMin(std::atomic<int> &target, int value) {
 
 } // namespace
 
-// Usable thread count: one per core, capped at 18 since that is all the
-// parallelism the root-move split can offer.
+// Usable thread count: one per core, but never more than the preallocated
+// pthread pool holds.
+//
+// Browser threads cannot be conjured on demand. pthread_create needs a Worker,
+// Worker creation is asynchronous, and pthread_create is not, so Emscripten
+// hands out threads from a pool fixed at build time. Asking for more than the
+// pool has does not fail — it blocks forever waiting for one to come free.
+// That is a deadlock, and it is why a 10-core machine hung where a 7-core one
+// was fine.
+//
+// SOLVER_PTHREAD_POOL is defined by web/build.sh from the same variable it
+// passes to -s PTHREAD_POOL_SIZE, so the two cannot drift apart.
+#ifndef SOLVER_PTHREAD_POOL
+#define SOLVER_PTHREAD_POOL 18
+#endif
+
 int maxThreads() {
     unsigned n = std::thread::hardware_concurrency();
     if (n == 0) n = 4;
-    return (int) (n < 18u ? n : 18u);
+
+    unsigned cap = SOLVER_PTHREAD_POOL;   // never oversubscribe the pool
+    if (cap > 18u) cap = 18u;             // 18 root moves is all the work there is
+    return (int) (n < cap ? n : cap);
 }
 
 std::string solveMT(int numThreads) {
     if (!g_db) return "!";
     if (g_cube.isSolved()) return "";
     if (numThreads < 1) numThreads = 1;
-    if (numThreads > 18) numThreads = 18;
+    if (numThreads > maxThreads()) numThreads = maxThreads();
 
     int bound = (int) g_db->getNumMoves(g_cube);
     std::vector<MOVE> result;
@@ -326,6 +421,7 @@ EMSCRIPTEN_BINDINGS(rubiks) {
     emscripten::function("loadDatabaseFromMemory", &loadDatabaseFromMemory);
     emscripten::function("isReady", &isReady);
     emscripten::function("getFacelets", &getFacelets);
+    emscripten::function("setFacelets", &setFacelets);
     emscripten::function("isSolved", &isSolved);
     emscripten::function("heuristic", &heuristic);
     emscripten::function("resetCube", &resetCube);

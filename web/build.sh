@@ -45,16 +45,22 @@ emcc "${SOURCES[@]}" "${COMMON[@]}" \
   -s STACK_SIZE=8MB \
   -o "$OUT/solver.js"
 
-echo "==> Building multithreaded solver"
+# One source of truth: the pool the runtime allocates and the cap the C++ uses
+# when deciding how many threads to ask for. If these disagree, a machine with
+# more cores than the pool deadlocks inside pthread_create.
+POOL=12
+
+echo "==> Building multithreaded solver (pool: $POOL)"
 # Shared memory cannot grow cheaply, so this build takes a fixed heap instead:
-# 48 MB database + a 48 MB staging buffer that is freed immediately + 8 x 2 MB
-# thread stacks. The pool is preallocated at startup because pthread_create
+# 48 MB database + a 48 MB staging buffer that is freed immediately + the pool's
+# 2 MB thread stacks. The pool is preallocated at startup because pthread_create
 # cannot block waiting for a Worker to spin up, so the threads have to exist
 # before the search asks for them.
 emcc "${SOURCES[@]}" "${COMMON[@]}" \
   -pthread \
   -s EXPORT_NAME=createSolverMT \
-  -s PTHREAD_POOL_SIZE=8 \
+  -s PTHREAD_POOL_SIZE=$POOL \
+  -D SOLVER_PTHREAD_POOL=$POOL \
   -s DEFAULT_PTHREAD_STACK_SIZE=2MB \
   -s INITIAL_MEMORY=192MB \
   -s STACK_SIZE=8MB \
