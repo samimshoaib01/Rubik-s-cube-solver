@@ -42,7 +42,18 @@ let threads = 1;
 
 async function init(dbBytes) {
   log('instantiating WebAssembly' + (MT ? ' and starting thread pool' : ''));
-  mod = await (MT ? createSolverMT() : createSolver());
+
+  // Each pthread is a Worker that loads the module's own glue script. Emscripten
+  // works out which script that is from `_scriptName`, which inside a worker is
+  // self.location.href -- and that is THIS file, not solver-mt.js. Left alone,
+  // every pool thread boots a second copy of this worker, never completes the
+  // pthread handshake, and dies with an opaque error event. Point it at the
+  // real glue instead.
+  const moduleArgs = MT
+    ? { mainScriptUrlOrBlob: new URL('./solver-mt.js', self.location.href).href }
+    : {};
+
+  mod = await (MT ? createSolverMT(moduleArgs) : createSolver(moduleArgs));
 
   log('copying database into WebAssembly heap');
 

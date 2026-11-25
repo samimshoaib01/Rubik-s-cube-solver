@@ -444,6 +444,17 @@ function describeThreads() {
     mtWrap.title = threadFailure;
     useMT.disabled = true;
     mtWrap.classList.add('off');
+
+    // Show the actual reason rather than hiding it in a tooltip.
+    let why = document.getElementById('mt-why');
+    if (!why) {
+      why = document.createElement('p');
+      why.id = 'mt-why';
+      why.className = 'note';
+      why.style.cssText = 'margin:6px 0 0; color:#d29922';
+      mtWrap.insertAdjacentElement('afterend', why);
+    }
+    why.textContent = threadFailure;
   } else {
     mtLabel.textContent = 'Use all CPU cores (reloads once)';
     mtWrap.title = 'WebAssembly threads need cross-origin isolation, which only applies on a fresh page load.';
