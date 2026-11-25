@@ -63,6 +63,14 @@
   .row { display: flex; gap: 8px; }
   .row button { flex: 1; }
 
+  label.check {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 10px; font-size: 13px; color: var(--muted); cursor: pointer;
+  }
+  label.check input { accent-color: var(--accent); cursor: pointer; }
+  label.check.off { opacity: .5; cursor: not-allowed; }
+  label.check.off input { cursor: not-allowed; }
+
   label.slider { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
   label.slider b { color: var(--text); font-variant-numeric: tabular-nums; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
@@ -107,6 +115,7 @@
 </style>
 </head>
 <body>
+<script src="./coi-serviceworker.js"></script>
 
 <header>
   <h1>Rubik's Cube Solver</h1>
@@ -133,11 +142,21 @@
         <button id="btn-scramble" disabled>Scramble</button>
         <button id="btn-reset" disabled>Reset</button>
       </div>
+      <p class="note" style="margin:10px 0 0">
+        Each scramble restarts from a solved cube. Search cost grows about
+        15&times; per extra move, so a corner-only heuristic runs out of road
+        past ~13.
+      </p>
     </div>
 
     <div class="group">
       <h2>Solve</h2>
       <button class="primary" id="btn-solve" style="width:100%" disabled>Find optimal solution</button>
+      <button id="btn-cancel" style="width:100%; margin-top:8px; display:none">Cancel search</button>
+      <label class="check" id="mt-wrap">
+        <input type="checkbox" id="use-mt" checked disabled>
+        <span id="mt-label">Use all CPU cores</span>
+      </label>
     </div>
 
     <div class="group">
@@ -151,6 +170,7 @@
         <div><dt>Search time</dt><dd id="st-time">&mdash;</dd></div>
         <div><dt>Solution length</dt><dd id="st-len">&mdash;</dd></div>
         <div><dt>Heuristic lower bound</dt><dd id="st-lb">&mdash;</dd></div>
+        <div><dt>Threads used</dt><dd id="st-threads">&mdash;</dd></div>
         <div><dt>State</dt><dd id="st-state">solved</dd></div>
       </dl>
     </div>
@@ -167,9 +187,11 @@
         <b>provably optimal</b>.
       </p>
       <p class="note" style="margin-top:10px">
-        The desktop build fans the search across every CPU core for an 8&ndash;10&times;
-        speedup; this page runs single-threaded, since shared-memory threads need
-        response headers GitHub Pages can't set.
+        The search is also parallelised: the 18 root moves are dealt out across
+        your CPU cores, each running an independent depth-first search, and the
+        first to find a solution stops the rest. Every solution in a given
+        iteration has the same length, so racing them away doesn't cost
+        optimality.
       </p>
     </div>
   </aside>

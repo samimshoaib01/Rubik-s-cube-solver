@@ -51,6 +51,10 @@ const btnSolve    = $('btn-solve');
 const btnReset    = $('btn-reset');
 const depthInput  = $('depth');
 const depthVal    = $('depth-val');
+const btnCancel   = $('btn-cancel');
+const useMT       = $('use-mt');
+const mtWrap      = $('mt-wrap');
+const mtLabel     = $('mt-label');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Scene
@@ -185,17 +189,29 @@ function parseMove(tok) {
 // Worker RPC
 // ─────────────────────────────────────────────────────────────────────────────
 
-const worker = new Worker('./solver.worker.js');
+// IDA* blocks inside WebAssembly with no yield point, so there is no flag we
+// could set to interrupt it from outside. Terminating the worker is the only
+// reliable cancel — hence the spawn/respawn dance here. Re-initialising reads
+// the database back from IndexedDB, so a cancel costs a second, not a download.
+let worker = null;
 let nextId = 1;
-const pending = new Map();
+let pending = new Map();
+let caps = { threaded: false, threads: 1 };
 
-worker.onmessage = (e) => {
-  const { id, ok, error, ...rest } = e.data;
-  const slot = pending.get(id);
-  if (!slot) return;
-  pending.delete(id);
-  ok ? slot.resolve(rest) : slot.reject(new Error(error));
-};
+function spawnWorker() {
+  if (worker) worker.terminate();
+  pending.forEach(({ reject }) => reject(new Error('cancelled')));
+  pending = new Map();
+
+  worker = new Worker('./solver.worker.js');
+  worker.onmessage = (e) => {
+    const { id, ok, error, ...rest } = e.data;
+    const slot = pending.get(id);
+    if (!slot) return;
+    pending.delete(id);
+    ok ? slot.resolve(rest) : slot.reject(new Error(error));
+  };
+}
 
 function call(type, payload, transfer) {
   const id = nextId++;
@@ -280,6 +296,8 @@ async function gunzip(bytes) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+// Fetches (or reads from cache) and hands the database to the current worker.
+// Safe to call again after a respawn.
 async function loadDatabase() {
   let gz = await idbGet(IDB_KEY);
 
@@ -307,8 +325,35 @@ async function loadDatabase() {
   }
 
   loadTitle.textContent = 'Starting solver…';
-  await call('init', raw, [raw.buffer]);
+  caps = await call('init', raw, [raw.buffer]);
   loadBar.style.width = '100%';
+  return caps;
+}
+
+// Rebuilds the worker from scratch and reloads the database from cache.
+async function restartWorker() {
+  spawnWorker();
+  const gz = await idbGet(IDB_KEY);
+  if (!gz) { // cache miss — fall back to the full path
+    caps = await loadDatabase();
+    return;
+  }
+  const raw = await gunzip(new Uint8Array(gz));
+  caps = await call('init', raw, [raw.buffer]);
+}
+
+function describeThreads() {
+  if (!caps.threaded) {
+    useMT.checked = false;
+    useMT.disabled = true;
+    mtWrap.classList.add('off');
+    mtLabel.textContent = 'Multiple cores unavailable in this browser';
+    mtWrap.title = 'Needs SharedArrayBuffer, which requires a cross-origin-isolated page.';
+    return;
+  }
+  useMT.disabled = false;
+  mtWrap.classList.remove('off');
+  mtLabel.textContent = `Use all ${caps.threads} CPU cores`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -370,6 +415,12 @@ depthInput.addEventListener('input', () => {
 btnScramble.addEventListener('click', async () => {
   setBusy(true);
   try {
+    // Restart from solved every time. Scrambling on top of a scramble
+    // compounds the depth, and search cost grows ~15x per move — two 8-move
+    // scrambles is a 16-move cube, which this heuristic cannot finish.
+    await call('reset');
+    buildCube();
+
     const { moves } = await call('scramble', Number(depthInput.value));
     const tokens = moves.split(' ').filter(Boolean);
     movesBox.innerHTML = '<span class="empty">Scrambled — ready to solve.</span>';
@@ -386,23 +437,55 @@ btnScramble.addEventListener('click', async () => {
 
 btnSolve.addEventListener('click', async () => {
   setBusy(true);
+  btnCancel.style.display = 'block';
   movesBox.innerHTML = '<span class="empty">Searching…</span>';
   setStat('st-state', 'searching');
+
+  const threads = useMT.checked && caps.threaded ? caps.threads : 1;
+
   try {
-    const { moves, ms, lowerBound } = await call('solve');
+    const { moves, ms, lowerBound, threadsUsed } = await call('solve', { threads });
     const tokens = moves.split(' ').filter(Boolean);
 
     setStat('st-time', ms < 1000 ? `${ms.toFixed(0)} ms` : `${(ms / 1000).toFixed(2)} s`);
     setStat('st-len', `${tokens.length} moves`);
     setStat('st-lb', `${lowerBound} moves`);
+    setStat('st-threads', String(threadsUsed));
 
+    btnCancel.style.display = 'none';
     await playSequence(tokens, { highlight: true });
     setStat('st-state', 'solved', true);
   } catch (err) {
-    movesBox.innerHTML = '<span class="empty">Search failed.</span>';
-    setStat('st-state', 'error');
-    console.error(err);
+    btnCancel.style.display = 'none';
+    if (err.message === 'cancelled') {
+      movesBox.innerHTML = '<span class="empty">Search cancelled.</span>';
+      setStat('st-state', 'cancelled');
+    } else {
+      movesBox.innerHTML = '<span class="empty">Search failed.</span>';
+      setStat('st-state', 'error');
+      console.error(err);
+    }
   }
+  setBusy(false);
+});
+
+btnCancel.addEventListener('click', async () => {
+  btnCancel.disabled = true;
+  btnCancel.textContent = 'Stopping…';
+
+  // Killing the worker rejects the in-flight solve, which the handler above
+  // reports as 'cancelled'. The cube in the worker is gone with it, so the
+  // scramble on screen no longer matches — reset both to stay honest.
+  await restartWorker();
+  buildCube();
+
+  movesBox.innerHTML = '<span class="empty">Search cancelled — cube reset.</span>';
+  setStat('st-state', 'solved');
+  setStat('st-threads', '—');
+
+  btnCancel.disabled = false;
+  btnCancel.textContent = 'Cancel search';
+  btnCancel.style.display = 'none';
   setBusy(false);
 });
 
@@ -414,6 +497,7 @@ btnReset.addEventListener('click', async () => {
   setStat('st-time', '—');
   setStat('st-len', '—');
   setStat('st-lb', '—');
+  setStat('st-threads', '—');
   setStat('st-state', 'solved');
   setBusy(false);
 });
@@ -424,6 +508,7 @@ btnReset.addEventListener('click', async () => {
 
 buildCube();
 resize();
+spawnWorker();
 
 (function animate() {
   requestAnimationFrame(animate);
@@ -433,6 +518,7 @@ resize();
 
 loadDatabase()
   .then(() => {
+    describeThreads();
     loader.classList.add('hidden');
     setBusy(false);
   })

@@ -15,11 +15,23 @@
 //      deep scramble — fine on a laptop, fatal in a browser tab.
 //
 
+#if defined(__EMSCRIPTEN_PTHREADS__) || !defined(__EMSCRIPTEN__)
+#define SOLVER_HAS_THREADS 1
+#else
+#define SOLVER_HAS_THREADS 0
+#endif
+
 #include <emscripten/bind.h>
 #include <string>
 #include <vector>
 #include <random>
 #include <sstream>
+#include <climits>
+#if SOLVER_HAS_THREADS
+#include <thread>
+#include <atomic>
+#include <mutex>
+#endif
 
 #include "../Model/RubiksCubeBitboard.cpp"
 #include "../PatternDatabases/CornerPatternDatabase.h"
@@ -179,6 +191,122 @@ std::string solve() {
     return movesToString(path);
 }
 
+
+// ── Multithreaded search ─────────────────────────────────────────────────────
+//
+// Same strategy as the desktop IDAstarSolverMT: the 18 root moves are dealt out
+// to N threads, each of which runs an independent DFS over its own copy of the
+// cube. There is no shared mutable state in the hot loop, so no locking — the
+// only coordination is an atomic flag the threads poll to stop once one of them
+// has an answer.
+//
+// Optimality survives the parallelism. Within one bound iteration every
+// solution has length exactly `bound`: nothing shorter can exist, or the
+// previous iteration would have returned it, and nothing longer can be reached,
+// because f > bound is pruned. So it does not matter which thread wins the race.
+
+#if SOLVER_HAS_THREADS
+namespace {
+
+bool dfsMT(RubiksCubeBitboard &cube, int g, int bound, int lastFace,
+           std::vector<MOVE> &path, int &nextBound,
+           const std::atomic<bool> &found) {
+
+    if (found.load(std::memory_order_relaxed)) return false;
+
+    int h = (int) g_db->getNumMoves(cube);
+    int f = g + h;
+
+    if (f > bound) {
+        if (f < nextBound) nextBound = f;
+        return false;
+    }
+    if (cube.isSolved()) return true;
+
+    for (int i = 0; i < 18; i++) {
+        if (i / 3 == lastFace) continue;
+
+        MOVE m = MOVE(i);
+        cube.move(m);
+        path.push_back(m);
+
+        if (dfsMT(cube, g + 1, bound, i / 3, path, nextBound, found)) return true;
+
+        path.pop_back();
+        cube.invert(m);
+    }
+    return false;
+}
+
+void atomicMin(std::atomic<int> &target, int value) {
+    int prev = target.load();
+    while (value < prev && !target.compare_exchange_weak(prev, value)) {}
+}
+
+} // namespace
+
+// Usable thread count: one per core, capped at 18 since that is all the
+// parallelism the root-move split can offer.
+int maxThreads() {
+    unsigned n = std::thread::hardware_concurrency();
+    if (n == 0) n = 4;
+    return (int) (n < 18u ? n : 18u);
+}
+
+std::string solveMT(int numThreads) {
+    if (!g_db) return "!";
+    if (g_cube.isSolved()) return "";
+    if (numThreads < 1) numThreads = 1;
+    if (numThreads > 18) numThreads = 18;
+
+    int bound = (int) g_db->getNumMoves(g_cube);
+    std::vector<MOVE> result;
+
+    for (;;) {
+        std::atomic<bool> found(false);
+        std::atomic<int> nextBound(INT_MAX);
+        std::mutex resultMutex;
+        std::vector<std::thread> pool;
+
+        for (int t = 0; t < numThreads; t++) {
+            pool.emplace_back([&, t]() {
+                int localNext = INT_MAX;
+
+                // Thread t takes root moves t, t+N, t+2N, ...
+                for (int i = t; i < 18; i += numThreads) {
+                    if (found.load(std::memory_order_relaxed)) break;
+
+                    RubiksCubeBitboard cube = g_cube;
+                    cube.move(MOVE(i));
+
+                    std::vector<MOVE> path;
+                    path.push_back(MOVE(i));
+
+                    if (dfsMT(cube, 1, bound, i / 3, path, localNext, found)) {
+                        std::lock_guard<std::mutex> lk(resultMutex);
+                        if (!found.exchange(true)) result = path;
+                        break;
+                    }
+                }
+                atomicMin(nextBound, localNext);
+            });
+        }
+        for (auto &th : pool) th.join();
+
+        if (found.load()) {
+            for (MOVE m : result) g_cube.move(m);
+            return movesToString(result);
+        }
+        int nb = nextBound.load();
+        if (nb == INT_MAX) return "!";
+        bound = nb;
+    }
+}
+#else
+int maxThreads() { return 1; }
+std::string solveMT(int) { return solve(); }
+#endif
+
 EMSCRIPTEN_BINDINGS(rubiks) {
     emscripten::function("loadDatabase", &loadDatabase);
     emscripten::function("isReady", &isReady);
@@ -189,4 +317,6 @@ EMSCRIPTEN_BINDINGS(rubiks) {
     emscripten::function("applyMoves", &applyMoves);
     emscripten::function("scramble", &scramble);
     emscripten::function("solve", &solve);
+    emscripten::function("solveMT", &solveMT);
+    emscripten::function("maxThreads", &maxThreads);
 }
