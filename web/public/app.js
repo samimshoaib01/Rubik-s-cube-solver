@@ -198,19 +198,48 @@ let nextId = 1;
 let pending = new Map();
 let caps = { threaded: false, threads: 1 };
 
-function spawnWorker() {
-  if (worker) worker.terminate();
-  pending.forEach(({ reject }) => reject(new Error('cancelled')));
+function failAllPending(err) {
+  const waiting = pending;
   pending = new Map();
+  waiting.forEach(({ reject }) => reject(err));
+}
 
-  worker = new Worker('./solver.worker.js');
+function spawnWorker({ forceSingleThread = false } = {}) {
+  if (worker) worker.terminate();
+  failAllPending(new Error('cancelled'));
+
+  worker = new Worker('./solver.worker.js' + (forceSingleThread ? '?st=1' : ''));
+
   worker.onmessage = (e) => {
-    const { id, ok, error, ...rest } = e.data;
+    const { id, ok, error, fatal, progress, ...rest } = e.data;
+
+    // Out-of-band messages: progress notes and worker-level crashes.
+    if (progress) {
+      console.info('[solver]', progress);
+      loadDetail.textContent = progress[0].toUpperCase() + progress.slice(1) + '…';
+      return;
+    }
+    if (fatal) {
+      console.error('[solver] fatal:', error);
+      failAllPending(new Error(error));
+      return;
+    }
+
     const slot = pending.get(id);
     if (!slot) return;
     pending.delete(id);
     ok ? slot.resolve(rest) : slot.reject(new Error(error));
   };
+
+  // A worker that dies outright fires here; without this the page would wait
+  // on a promise that can never settle, which is exactly how the first
+  // threaded build appeared to hang at "Starting solver...".
+  worker.onerror = (e) => {
+    const where = e.filename ? ` (${e.filename}:${e.lineno})` : '';
+    console.error('[solver] worker error:', e.message, where);
+    failAllPending(new Error((e.message || 'worker crashed') + where));
+  };
+  worker.onmessageerror = () => failAllPending(new Error('worker message could not be deserialised'));
 }
 
 function call(type, payload, transfer) {
@@ -325,21 +354,51 @@ async function loadDatabase() {
   }
 
   loadTitle.textContent = 'Starting solver…';
-  caps = await call('init', raw, [raw.buffer]);
+  caps = await initWithFallback(raw);
   loadBar.style.width = '100%';
   return caps;
 }
 
+// Starting the WebAssembly thread pool is the one step with no timeout of its
+// own: if a pthread worker fails to come up, module instantiation simply never
+// resolves. Rather than hang, give it a deadline and fall back to the
+// single-threaded build, which has no pool to wait on.
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+    }),
+  ]);
+}
+
+async function initWithFallback(raw) {
+  // The buffer is transferred on the first attempt, so keep a copy for a retry.
+  const backup = raw.slice();
+
+  try {
+    return await withTimeout(call('init', raw, [raw.buffer]), 25000, 'Threaded startup');
+  } catch (err) {
+    console.warn('[solver] threaded start failed, falling back:', err.message);
+    loadTitle.textContent = 'Retrying single-threaded…';
+    loadDetail.textContent = 'Multiple cores unavailable; starting the portable build.';
+
+    spawnWorker({ forceSingleThread: true });
+    return withTimeout(call('init', backup, [backup.buffer]), 25000, 'Startup');
+  }
+}
+
 // Rebuilds the worker from scratch and reloads the database from cache.
 async function restartWorker() {
-  spawnWorker();
+  spawnWorker({ forceSingleThread: !caps.threaded });
   const gz = await idbGet(IDB_KEY);
   if (!gz) { // cache miss — fall back to the full path
     caps = await loadDatabase();
     return;
   }
   const raw = await gunzip(new Uint8Array(gz));
-  caps = await call('init', raw, [raw.buffer]);
+  caps = await withTimeout(call('init', raw, [raw.buffer]), 25000, 'Restart');
 }
 
 function describeThreads() {

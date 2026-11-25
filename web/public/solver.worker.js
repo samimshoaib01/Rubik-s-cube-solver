@@ -11,9 +11,31 @@
 // the single-threaded build instead so the demo still works.
 //
 
-const MT = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated;
+// ?st=1 forces the single-threaded build. The page uses it to retry after a
+// failed threaded start, so a broken MT path degrades instead of dead-ending.
+const FORCE_ST = /[?&]st=1/.test(self.location.search);
+const MT = !FORCE_ST
+  && typeof crossOriginIsolated !== 'undefined'
+  && crossOriginIsolated;
 
-importScripts(MT ? './solver-mt.js' : './solver.js');
+// Anything thrown at this level (a failed importScripts, a module that cannot
+// instantiate) would otherwise kill the worker silently and leave the page
+// waiting forever. Report it as a message the page can act on.
+self.addEventListener('error', (e) => {
+  self.postMessage({ fatal: true, error: `${e.message || 'worker error'} (${e.filename || '?'}:${e.lineno || 0})` });
+});
+self.addEventListener('unhandledrejection', (e) => {
+  self.postMessage({ fatal: true, error: `unhandled rejection: ${(e.reason && e.reason.message) || e.reason}` });
+});
+
+const log = (stage) => self.postMessage({ progress: stage, threaded: MT });
+
+try {
+  log('loading ' + (MT ? 'multithreaded' : 'single-threaded') + ' module');
+  importScripts(MT ? './solver-mt.js' : './solver.js');
+} catch (err) {
+  self.postMessage({ fatal: true, error: 'importScripts failed: ' + err.message });
+}
 
 let mod = null;
 let threads = 1;
@@ -21,7 +43,10 @@ let threads = 1;
 const DB_PATH = '/corner.db';
 
 async function init(dbBytes) {
+  log('instantiating WebAssembly' + (MT ? ' and starting thread pool' : ''));
   mod = await (MT ? createSolverMT() : createSolver());
+
+  log('writing database to module filesystem');
 
   // Hand the database to the C++ side through Emscripten's in-memory FS, so
   // PatternDatabase::fromFile works unmodified from the desktop build.
@@ -35,6 +60,7 @@ async function init(dbBytes) {
   if (!ok) throw new Error('Database rejected by loadDatabase()');
 
   threads = MT ? mod.maxThreads() : 1;
+  log('ready');
   return { threaded: MT, threads };
 }
 

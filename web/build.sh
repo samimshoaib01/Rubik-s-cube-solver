@@ -46,14 +46,17 @@ emcc "${SOURCES[@]}" "${COMMON[@]}" \
   -o "$OUT/solver.js"
 
 echo "==> Building multithreaded solver"
-# Shared memory cannot grow cheaply, so this build takes a fixed, generous heap
-# instead: 48 MB database + 48 MB transient MEMFS copy + per-thread stacks.
+# Shared memory cannot grow cheaply, so this build takes a fixed heap instead:
+# 48 MB database + 48 MB transient MEMFS copy + 8 x 2 MB thread stacks, with
+# room to spare. The pool is preallocated at startup because pthread_create
+# cannot block waiting for a Worker to spin up, so the threads have to exist
+# before the search asks for them.
 emcc "${SOURCES[@]}" "${COMMON[@]}" \
   -pthread \
   -s EXPORT_NAME=createSolverMT \
-  -s PTHREAD_POOL_SIZE=12 \
-  -s DEFAULT_PTHREAD_STACK_SIZE=4MB \
-  -s INITIAL_MEMORY=288MB \
+  -s PTHREAD_POOL_SIZE=8 \
+  -s DEFAULT_PTHREAD_STACK_SIZE=2MB \
+  -s INITIAL_MEMORY=256MB \
   -s STACK_SIZE=8MB \
   -o "$OUT/solver-mt.js"
 
