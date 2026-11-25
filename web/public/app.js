@@ -216,7 +216,11 @@ function spawnWorker({ forceSingleThread = false } = {}) {
     // Out-of-band messages: progress notes and worker-level crashes.
     if (progress) {
       console.info('[solver]', progress);
-      loadDetail.textContent = progress[0].toUpperCase() + progress.slice(1) + '…';
+      // A late message must not paint over an error already on screen — that
+      // is how the real reason got replaced by "Ready..." last time.
+      if (!errorShown) {
+        loadDetail.textContent = progress[0].toUpperCase() + progress.slice(1) + '…';
+      }
       return;
     }
     if (fatal) {
@@ -378,14 +382,14 @@ async function initWithFallback(raw) {
   const backup = raw.slice();
 
   try {
-    return await withTimeout(call('init', raw, [raw.buffer]), 25000, 'Threaded startup');
+    return await withTimeout(call('init', raw, [raw.buffer]), 90000, 'Threaded startup');
   } catch (err) {
     console.warn('[solver] threaded start failed, falling back:', err.message);
     loadTitle.textContent = 'Retrying single-threaded…';
     loadDetail.textContent = 'Multiple cores unavailable; starting the portable build.';
 
     spawnWorker({ forceSingleThread: true });
-    return withTimeout(call('init', backup, [backup.buffer]), 25000, 'Startup');
+    return withTimeout(call('init', backup, [backup.buffer]), 90000, 'Startup');
   }
 }
 
@@ -398,7 +402,7 @@ async function restartWorker() {
     return;
   }
   const raw = await gunzip(new Uint8Array(gz));
-  caps = await withTimeout(call('init', raw, [raw.buffer]), 25000, 'Restart');
+  caps = await withTimeout(call('init', raw, [raw.buffer]), 90000, 'Restart');
 }
 
 function describeThreads() {
@@ -457,7 +461,11 @@ async function playSequence(tokens, { highlight }) {
   if (highlight) renderMoves(tokens, tokens.length);
 }
 
+let errorShown = false;
+
 function showError(message) {
+  errorShown = true;
+  console.error('[solver] giving up:', message);
   loader.classList.remove('hidden');
   loadTitle.textContent = 'Something went wrong';
   loadDetail.textContent = message;

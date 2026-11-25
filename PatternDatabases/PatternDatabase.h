@@ -43,6 +43,17 @@ public:
 
     virtual bool fromFile(const std::string &filePath);
 
+    /*
+     * Load the database straight from a buffer already in memory.
+     *
+     * The WebAssembly build has the bytes in hand after downloading and
+     * decompressing them, with no file to point fromFile at. Staging them
+     * through Emscripten's in-memory filesystem would mean holding the table
+     * twice and copying it through the JS-backed syscall layer, so take them
+     * directly instead. Returns false if len does not match storageSize().
+     */
+    virtual bool fromMemory(const uint8_t *data, std::size_t len);
+
     virtual std::vector<uint8_t> inflate() const;
 
     virtual void reset();

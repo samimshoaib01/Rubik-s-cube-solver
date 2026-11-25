@@ -31,8 +31,8 @@ COMMON=(
   -O3 -std=c++14 -I compat -fexceptions
   -s MODULARIZE=1
   -s ENVIRONMENT=web,worker
-  -s FORCE_FILESYSTEM=1
-  -s EXPORTED_RUNTIME_METHODS=FS
+  -s EXPORTED_RUNTIME_METHODS=HEAPU8
+  -s EXPORTED_FUNCTIONS=_malloc,_free
   -lembind
 )
 
@@ -47,8 +47,8 @@ emcc "${SOURCES[@]}" "${COMMON[@]}" \
 
 echo "==> Building multithreaded solver"
 # Shared memory cannot grow cheaply, so this build takes a fixed heap instead:
-# 48 MB database + 48 MB transient MEMFS copy + 8 x 2 MB thread stacks, with
-# room to spare. The pool is preallocated at startup because pthread_create
+# 48 MB database + a 48 MB staging buffer that is freed immediately + 8 x 2 MB
+# thread stacks. The pool is preallocated at startup because pthread_create
 # cannot block waiting for a Worker to spin up, so the threads have to exist
 # before the search asks for them.
 emcc "${SOURCES[@]}" "${COMMON[@]}" \
@@ -56,7 +56,7 @@ emcc "${SOURCES[@]}" "${COMMON[@]}" \
   -s EXPORT_NAME=createSolverMT \
   -s PTHREAD_POOL_SIZE=8 \
   -s DEFAULT_PTHREAD_STACK_SIZE=2MB \
-  -s INITIAL_MEMORY=256MB \
+  -s INITIAL_MEMORY=192MB \
   -s STACK_SIZE=8MB \
   -o "$OUT/solver-mt.js"
 

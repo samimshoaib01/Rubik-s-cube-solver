@@ -98,6 +98,18 @@ bool PatternDatabase::fromFile(const string &filePath) {
     return true;
 }
 
+bool PatternDatabase::fromMemory(const uint8_t *data, size_t len) {
+    if (data == nullptr)
+        return false;
+
+    if (len != this->database.storageSize())
+        return false;
+
+    memcpy(this->database.data(), data, len);
+    this->numItems = this->size;
+    return true;
+}
+
 vector<uint8_t> PatternDatabase::inflate() const {
     vector<uint8_t> inflated;
     this->database.inflate(inflated);

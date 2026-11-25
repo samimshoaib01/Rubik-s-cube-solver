@@ -111,6 +111,20 @@ bool loadDatabase(const std::string &path) {
     return g_db->fromFile(path);
 }
 
+// Loads the database from a buffer the JS side has already written into the
+// WebAssembly heap. Avoids staging 48 MB through MEMFS, which meant holding the
+// table twice and pushing every byte through the emulated filesystem.
+bool loadDatabaseFromMemory(uintptr_t ptr, size_t len) {
+    if (g_db) delete g_db;
+    g_db = new CornerPatternDatabase();
+    if (!g_db->fromMemory(reinterpret_cast<const uint8_t *>(ptr), len)) {
+        delete g_db;
+        g_db = nullptr;
+        return false;
+    }
+    return true;
+}
+
 bool isReady() { return g_db != nullptr; }
 
 // 54 colour letters, face order U L F R B D, each face read row-major.
@@ -309,6 +323,7 @@ std::string solveMT(int) { return solve(); }
 
 EMSCRIPTEN_BINDINGS(rubiks) {
     emscripten::function("loadDatabase", &loadDatabase);
+    emscripten::function("loadDatabaseFromMemory", &loadDatabaseFromMemory);
     emscripten::function("isReady", &isReady);
     emscripten::function("getFacelets", &getFacelets);
     emscripten::function("isSolved", &isSolved);

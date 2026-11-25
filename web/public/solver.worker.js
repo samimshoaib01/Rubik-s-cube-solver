@@ -40,24 +40,29 @@ try {
 let mod = null;
 let threads = 1;
 
-const DB_PATH = '/corner.db';
-
 async function init(dbBytes) {
   log('instantiating WebAssembly' + (MT ? ' and starting thread pool' : ''));
   mod = await (MT ? createSolverMT() : createSolver());
 
-  log('writing database to module filesystem');
+  log('copying database into WebAssembly heap');
 
-  // Hand the database to the C++ side through Emscripten's in-memory FS, so
-  // PatternDatabase::fromFile works unmodified from the desktop build.
-  mod.FS.writeFile(DB_PATH, dbBytes);
-  const ok = mod.loadDatabase(DB_PATH);
+  // Copy straight into the module's heap and let PatternDatabase::fromMemory
+  // take it from there. The previous route wrote the 48 MB through MEMFS and
+  // read it back with a C++ ifstream, which meant holding the table twice and
+  // pushing every byte through the emulated filesystem.
+  const ptr = mod._malloc(dbBytes.byteLength);
+  if (!ptr) throw new Error(`Could not allocate ${dbBytes.byteLength} bytes in the WASM heap`);
 
-  // The database now lives inside the NibbleArray; drop the MEMFS copy so we
-  // aren't holding 48 MB twice.
-  try { mod.FS.unlink(DB_PATH); } catch (e) { /* non-fatal */ }
+  let ok;
+  try {
+    mod.HEAPU8.set(dbBytes, ptr);
+    log('loading pattern database');
+    ok = mod.loadDatabaseFromMemory(ptr, dbBytes.byteLength);
+  } finally {
+    mod._free(ptr);
+  }
 
-  if (!ok) throw new Error('Database rejected by loadDatabase()');
+  if (!ok) throw new Error('Database rejected by fromMemory() — wrong size?');
 
   threads = MT ? mod.maxThreads() : 1;
   log('ready');
