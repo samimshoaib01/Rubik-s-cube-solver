@@ -41,11 +41,8 @@ jobs:
       - name: Build WebAssembly bundle
         run: ./web/build.sh
 
-      # enablement turns Pages on for the repo automatically, so there is no
-      # manual switch to flip in Settings before the first deploy.
+      # Requires Settings -> Pages -> Source: "GitHub Actions" (one-time).
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
